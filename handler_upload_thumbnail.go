@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/base64"
-	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -30,7 +30,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
+	// fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
 	const maxMemory = 10 << 20
 	r.ParseMultipartForm(maxMemory)
@@ -42,13 +42,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	mediaType := header.Header.Get("Content-Type")
-	thumbData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process file", err)
-		return
-	}
-
 	dbVideo, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error retrieving entry for video", err)
@@ -59,10 +52,32 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumbString := base64.StdEncoding.EncodeToString(thumbData)
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse Content-Type header", err)
+		return
+	}
+	if mediaType != "image/jpeg" && mediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Incorrect media type", err)
+		return
+	}
 
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, thumbString)
-	dbVideo.ThumbnailURL = &dataURL
+	assetFileName := getAssetFileName(videoID, mediaType)
+	assetDiskPath := cfg.getAssetDiskPath(assetFileName)
+	thumbFile, err := os.Create(assetDiskPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "error storing thumbnail", err)
+		return
+	}
+	defer thumbFile.Close()
+
+	if _, err := io.Copy(thumbFile, file); err != nil {
+		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process file", err)
+		return
+	}
+
+	thumbURL := cfg.getAssetURL(assetFileName)
+	dbVideo.ThumbnailURL = &thumbURL
 	if err := cfg.db.UpdateVideo(dbVideo); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error updating video thumbnail", err)
 		return
