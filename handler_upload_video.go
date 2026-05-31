@@ -77,25 +77,45 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer tmpFile.Close()
 
 	if _, err := io.Copy(tmpFile, incommingFile); err != nil {
-		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process file", err)
+		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process video", err)
 		return
 	}
 
 	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
-		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process file", err)
+		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process video", err)
+		return
+	}
+
+	fastStartFilePath, err := processVideoForFastStart(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusUnprocessableEntity, "Unable to process video", err)
 		return
 	}
 
 	randomBytes := make([]byte, 32)
 	rand.Read(randomBytes)
-
 	randomKey := base64.RawURLEncoding.EncodeToString(randomBytes)
-	assetKey := getAssetFileName(randomKey, mediaType)
+
+	aspectRatioLabel, err := getVideoAspectRatio(fastStartFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusUnprocessableEntity, "Unable to analyze video file properties", err)
+		return
+	}
+
+	fastStartFile, err := os.Open(fastStartFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Unable to process video", err)
+		return
+	}
+	defer os.Remove(fastStartFile.Name())
+	defer fastStartFile.Close()
+
+	assetKey := getAssetFileName(aspectRatioLabel+"/"+randomKey, mediaType)
 
 	if _, err := cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &assetKey,
-		Body:        tmpFile,
+		Body:        fastStartFile,
 		ContentType: &mediaType,
 	}); err != nil {
 		respondWithError(w, http.StatusUnprocessableEntity, "Unable to upload file", err)
